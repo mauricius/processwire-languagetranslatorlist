@@ -19,7 +19,7 @@
 /**
  * Class LanguageTranslatorList
  */
-class LanguageTranslatorList extends ProcessLanguageTranslator implements Module  {
+class LanguageTranslatorList extends ProcessLanguageTranslator implements Module {
 
   /**
    * Retrieves module meta data
@@ -57,6 +57,7 @@ class LanguageTranslatorList extends ProcessLanguageTranslator implements Module
       $this->setLanguage($this->getCurrentLanguageId());
       $this->addHookBefore('ProcessLanguageTranslator::executeAdd', $this, 'processExecuteAdd');
       $this->addHookBefore('ProcessLanguageTranslator::executeList', $this, 'processExecuteList');
+      $this->addHookBefore('ProcessLanguageTranslator::executeEdit', $this, 'processExecuteEdit');
     }
   }
 
@@ -176,6 +177,67 @@ class LanguageTranslatorList extends ProcessLanguageTranslator implements Module
 
     $event->replace = true;
     $event->return = $out;
+
+  }
+
+  public function processExecuteEdit(HookEvent $event) {
+
+    $this->addBreadcrumbs();
+    $this->breadcrumb('../add/', $this->_x('Select File(s)', 'breadcrumb')); 
+    $this->headline($this->_x('Translate File', 'headline')); 
+
+    $textdomain = $this->input->get->textdomain;
+    $file = $this->translator->textdomainToFilename($textdomain); 
+    if(!$file) throw new WireException($this->_('Unable to load textdomain')); 
+    $file = $this->config->paths->root . $file; 
+
+    if(!is_file($file)) {
+      $file = str_replace($this->wire('config')->paths->root, '/', $file); 
+      $this->error(
+        $this->_('File does not exist:') . " $file " . 
+        sprintf($this->_('(translation file not needed? textdomain: %s)'), $textdomain)
+      ); 
+      $this->session->redirect('../add/'); 
+    }
+
+    $numFound = $this->parseTranslatableFile($file); 
+
+    $form = $this->modules->get('InputfieldForm'); 
+    $form->attr('action', "./?textdomain=$textdomain"); 
+    $form->attr('method', 'post'); 
+    $form->description = sprintf($this->_('Translate %1$s to %2$s'), basename($file), $this->language->title);
+    $form->value = "<p>" . 
+      $this->_('Each of the inputs below represents a block of text to translate.') . ' ' .  
+      sprintf($this->_('The text shown immediately above each input is the text that should be translated to %s.'), $this->language->title) . ' ' . 
+      $this->_('If you leave an input blank, the non-translated text will be used.') . ' ' . 
+      $this->_('If the translation will be identical to the original, you may also enter a single "=" (equals sign) for the translation and it will be marked as translated.') . 
+      "</p>";
+    
+    $translations = $this->translator->getTranslations($textdomain); 
+
+    foreach($this->untranslated as $hash => $untranslated) {
+      $translated = isset($translations[$hash]) ? $translations[$hash]['text'] : ''; 
+      $form->add($this->executeEditField($hash, $untranslated, $translated));
+    }
+
+    $this->executeEditAbandoned($translations, $form);
+    
+    $field = $this->modules->get('InputfieldCheckbox');
+    $field->attr('id+name', 'untranslated');
+    $field->label = $this->_('Only show blocks that are not yet translated');
+    if($this->session->getFor($this, 'untranslated')) $field->attr('checked', 'checked');
+    $form->prepend($field);
+
+    $submit = $this->modules->get("InputfieldSubmit"); 
+    $submit->attr('id+name', 'save_translations'); 
+    $submit->value = $this->_x('Save', 'button');
+    $submit->attr('class', $submit->attr('class') . ' head_button_clone'); 
+    $form->add($submit);  
+
+    if($this->input->post->save_translations) $this->processEdit($form, $textdomain, $translations);
+
+    $event->replace = true;
+    $event->return = $form->render();
   }
 
   /**
@@ -224,6 +286,15 @@ class LanguageTranslatorList extends ProcessLanguageTranslator implements Module
     closedir($handle);
 
     return $result;
+  }
+
+  protected function parseTranslatableFile($file) {
+    require_once(dirname(__FILE__) . '/SmartyLanguageParser.php'); 
+    $parser = new SmartyLanguageParser($this->translator, $file); 
+    $this->comments = $parser->getComments();
+    $this->untranslated = $parser->getUntranslated();
+
+    return $parser->getNumFound(); 
   }
 
   /**
